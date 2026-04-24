@@ -20,6 +20,8 @@ app.post("/chat", async (req, res) => {
   }
 });
 
-app.listen(5001, () => {
-  console.log("Copilot API on 5000");
+const PORT = process.env.PORT || 5000;
+
+app.listen(PORT, () => {
+  console.log(`Copilot API running on ${PORT}`);
 });
