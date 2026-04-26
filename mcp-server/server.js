@@ -20,4 +20,4 @@ app.post("/tool/:toolName", async (req, res) => {
   res.json({ result });
 });
 
-app.listen(4000, () => console.log("MCP running on 4000"));
+app.listen(4000, () => console.log("Tool server running on 4000"));

@@ -1,16 +1,17 @@
 import axios from "axios";
 import { client } from "../utils/openai.js";
 
+
 const MCP_URL = "http://localhost:4000/tool";
+const safeResult = (res) => res?.data?.result ?? null;
 
 export async function runAgent(input) {
   try {
     // Step 1: Extract claim_id
-    const claimIdMatch = input.match(/\d+/);
+    const claimIdMatch = input.match(/\b\d{3,6}\b/);
+
     if (!claimIdMatch) {
-      return {
-        error: "No claim ID found in input",
-      };
+      return { error: "No valid claim ID found in input" };
     }
 
     const claim_id = claimIdMatch[0];
@@ -21,17 +22,45 @@ export async function runAgent(input) {
       claim_id,
     });
 
-    const claim = claimRes.data.result;
+    const claim = safeResult(claimRes);
+
+    if (!claim || claim.error) {
+      return {
+        claim_id,
+        error: "Claim not found or invalid response",
+        risk_level: "UNKNOWN",
+        summary: "Unable to fetch claim details",
+        recommended_actions: ["Verify claim ID", "Check MCP service"],
+      };
+    }
 
     // Step 3: Get customer history
+    const customerMap = {
+      "123": "C1",
+      "456": "C2",
+      "789": "C3",
+      "278": "C4",
+      "873": "C5",
+    };
+
     const historyRes = await axios.post(
       `${MCP_URL}/get_customer_history`,
       {
-        customer_id: claim.claim_id,
+        customer_id: customerMap[claim.claim_id],
       }
     );
 
-    const history = historyRes.data.result;
+    const history = safeResult(historyRes);
+
+    if (!history || typeof history.total_claims !== "number") {
+      return {
+        claim_id,
+        error: "Customer history not available",
+        risk_level: "UNKNOWN",
+        summary: "Cannot evaluate due to missing history data",
+        recommended_actions: ["Fix MCP history service", "Retry request"],
+      };
+    }
 
     // Step 4: Fraud signals
     const fraudRes = await axios.post(
@@ -42,18 +71,28 @@ export async function runAgent(input) {
       }
     );
 
-    const fraudSignals = fraudRes.data.result;
+    const fraudSignals = safeResult(fraudRes) || [];
 
-    // Step 5: LLM Explanation (clean + structured)
+    if (!Array.isArray(fraudSignals)) {
+      return {
+        claim_id,
+        error: "Fraud signal generation failed",
+        risk_level: "UNKNOWN",
+        summary: "Invalid fraud signal response",
+        recommended_actions: ["Check fraud engine"],
+      };
+    }
+
+    // Step 5: LLM Explanation
     const llmRes = await client.chat.completions.create({
-      model: "llama-3.3-70b-versatile", // or your working Groq model
+      model: "llama-3.3-70b-versatile",
       messages: [
         {
           role: "system",
           content: `
 You are an insurance fraud investigator.
 
-Return STRICT JSON ONLY in this format:
+Return STRICT JSON ONLY:
 {
   "risk_level": "LOW | MEDIUM | HIGH",
   "reasoning": ["point1", "point2"],
@@ -77,8 +116,7 @@ Fraud Signals: ${JSON.stringify(fraudSignals)}
 
     try {
       parsedOutput = JSON.parse(llmRes.choices[0].message.content);
-    } catch (e) {
-      // fallback if LLM messes up JSON
+    } catch {
       parsedOutput = {
         risk_level: "UNKNOWN",
         reasoning: fraudSignals,
@@ -87,16 +125,18 @@ Fraud Signals: ${JSON.stringify(fraudSignals)}
       };
     }
 
-    // ✅ FINAL RESPONSE (UI READY)
+    // FINAL RESPONSE
     return {
-      claim_id,
-      risk_level: parsedOutput.risk_level,
-      fraud_signals: fraudSignals,
+      claim_id: claim.claim_id,
       claim_details: claim,
       customer_history: history,
+      fraud_signals: fraudSignals,
+
+      risk_level: parsedOutput.risk_level,
       reasoning: parsedOutput.reasoning,
       summary: parsedOutput.summary,
       recommended_actions: parsedOutput.recommended_actions,
+
       timestamp: new Date().toISOString(),
     };
 
